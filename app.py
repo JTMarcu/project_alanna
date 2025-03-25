@@ -1,131 +1,182 @@
+# app.py
 import os
+import sys
+import openai
 import pandas as pd
-import streamlit as st
-from langchain_community.embeddings import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
-from langchain_community.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-from dotenv import load_dotenv
 import subprocess
+from dotenv import load_dotenv
+import tkinter as tk
+from tkinter import messagebox
 
-# Load environment variables
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+def get_job_description_from_dialog() -> str:
+    """
+    Opens a Tkinter window with a large text box for the user
+    to paste or type the job description. Returns the result.
+    """
+    job_desc_container = []
 
-st.set_page_config(page_title="AI Resume & Cover Letter Generator", layout="centered")
-st.title("📄 AI Resume Tuner + Cover Letter Generator")
-st.markdown("Paste a job description below and get a customized resume + cover letter.")
+    def on_ok():
+        # Retrieve text from the box, store it, then close
+        desc = text_box.get("1.0", "end-1c").strip()
+        job_desc_container.append(desc)
+        root.destroy()
 
-# Create output directory
-os.makedirs("output", exist_ok=True)
+    def on_cancel():
+        root.destroy()
 
-# === Section 1: Upload Resume CSV ===
-df = None
-csv_file = st.file_uploader("Upload your resume_data.csv", type="csv")
+    root = tk.Tk()
+    root.title("Job Description")
 
-if csv_file:
-    df = pd.read_csv(csv_file)
+    label = tk.Label(root, text="Paste or type the job description below:")
+    label.pack(padx=10, pady=5)
 
-# === Section 2: Job Description Input ===
-job_description = st.text_area("Paste the job description here:", height=300)
+    text_box = tk.Text(root, wrap="word", width=80, height=20)
+    text_box.pack(padx=10, pady=5)
 
-# === Section 3: Resume + Cover Letter Generator ===
-if st.button("Generate Resume & Cover Letter") and job_description and df is not None:
-    with st.spinner("Generating personalized documents..."):
-        try:
-            docs = [Document(page_content=row["content"], metadata=row.to_dict()) for _, row in df.iterrows()]
-            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-            split_docs = splitter.split_documents(docs)
+    button_frame = tk.Frame(root)
+    button_frame.pack(padx=10, pady=5)
 
-            embeddings = OpenAIEmbeddings()
-            vectorstore = FAISS.from_documents(split_docs, embeddings)
-            relevant_docs = vectorstore.similarity_search(job_description, k=8)
-            relevant_experience = "\n".join([doc.page_content for doc in relevant_docs])
+    ok_button = tk.Button(button_frame, text="OK", command=on_ok)
+    ok_button.pack(side="left", padx=5)
 
-            st.write("🔄 Sending prompt to GPT...")
-            llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.7)
-            prompt_template = PromptTemplate(
-                input_variables=["job_description", "experience"],
-                template="""
-You are a job search assistant. A user is applying for the following role:
+    cancel_button = tk.Button(button_frame, text="Cancel", command=on_cancel)
+    cancel_button.pack(side="left", padx=5)
 
-[Job Description]
-{job_description}
+    root.mainloop()
 
-Here is their background:
-{experience}
+    return job_desc_container[0] if job_desc_container else ""
 
-1. Generate a tailored resume CSV based on their background and the job description.
-   Use columns: section, subsection, content.
-   Only include the most relevant skills, experience, and projects.
+def call_llm_to_shorten_resume(job_desc: str, full_resume_data: str) -> str:
+    """
+    Calls the OpenAI ChatCompletion to produce:
+    - A short CSV for a 1-page resume
+    - A cover letter
+    in a single text output
+    """
+    prompt = f"""
+You are a specialized AI that creates concise, ATS-friendly resumes for a job applicant.
+IMPORTANT:
+- Always include a personal_info section with subsections: name, target_roles, plus any relevant contact details.
+=== JOB DESCRIPTION ===
+{job_desc}
 
-2. Also generate a personalized, concise cover letter.
-                """
-            )
+=== FULL RESUME DATA (CSV) ===
+{full_resume_data}
 
-            chain = LLMChain(llm=llm, prompt=prompt_template)
-            response = chain.run({
-                "job_description": job_description,
-                "experience": relevant_experience
-            })
-            st.write("✅ Got response from GPT.")
+YOUR TASK:
+1) Produce a short CSV with columns (section,subsection,content), focusing on the most relevant details.
+2) Follow that CSV with a concise cover letter (<=200 words),
+   beginning with "Dear ".
 
-            st.markdown("---")
-            st.subheader("🧠 GPT Output Preview")
-            st.code(response)
+Output format must be:
+   section,subsection,content
+   ... (CSV lines) ...
+   Dear ...
+   ... (cover letter) ...
+    """
 
-            csv_text, cover_letter = "", ""
-            if "section," in response:
-                csv_part = response.split("section,")[1].strip()
-                csv_text = "section," + csv_part
-            if "Dear" in response:
-                letter_start = response.index("Dear")
-                cover_letter = response[letter_start:]
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful resume-optimizing assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=1500
+        )
+        return response.choices[0].message.content
 
-            tailored_csv_path = os.path.join("output", "tailored_resume.csv")
-            cover_letter_path = os.path.join("output", "cover_letter.txt")
-            output_pdf = os.path.join("output", "tailored_resume.pdf")
+    except Exception as e:
+        messagebox.showerror("OpenAI Error", f"OpenAI API call failed: {e}")
+        return ""
 
-            with open(tailored_csv_path, "w", encoding="utf-8") as f:
-                f.write(csv_text)
+def parse_response_for_csv_and_letter(full_text: str):
+    """
+    Splits the LLM's combined output into:
+      - CSV portion (section,subsection,content lines)
+      - Cover letter portion (beginning with "Dear ")
+    """
+    csv_marker = "section,subsection,content"
+    letter_marker = "Dear "
 
-            with open(cover_letter_path, "w", encoding="utf-8") as f:
-                f.write(cover_letter)
+    csv_part = ""
+    letter_part = ""
 
-            subprocess.run(["python", "resume.py", tailored_csv_path, output_pdf])
-
-            if os.path.exists(output_pdf) and os.path.getsize(output_pdf) > 0:
-                st.success("🎉 Done! Download your documents below:")
-                st.download_button("📄 Download Resume PDF", open(output_pdf, "rb"), file_name="tailored_resume.pdf")
-                st.download_button("💌 Download Cover Letter", open(cover_letter_path, "rb"), file_name="cover_letter.txt")
-            else:
-                st.error("❌ Failed to generate resume PDF. Please check the CSV format or content.")
-
-        except Exception as e:
-            st.error(f"❌ An error occurred: {e}")
-
-# === Section 4: Add New Entry to Master Resume CSV ===
-st.markdown("---")
-st.subheader("➕ Add New Content to Resume Data")
-
-with st.form("add_entry_form"):
-    section = st.selectbox("Section", ["professional_summary", "technical_skills", "professional_experience", "certifications", "projects"])
-    subsection = st.text_input("Subsection (e.g. project name, role title)")
-    content = st.text_area("Content (describe the experience, project, or skill)", height=150)
-    submitted = st.form_submit_button("Add to Resume CSV")
-
-    if submitted:
-        if not csv_file:
-            st.error("Please upload your resume_data.csv first.")
+    if csv_marker in full_text:
+        start_idx = full_text.index(csv_marker)
+        csv_part = full_text[start_idx:]
+        if letter_marker in csv_part:
+            letter_idx = csv_part.index(letter_marker)
+            letter_part = csv_part[letter_idx:].strip()
+            csv_part = csv_part[:letter_idx].strip()
         else:
-            new_row = pd.DataFrame([[section, subsection, content]], columns=["section", "subsection", "content"])
-            df = pd.concat([df, new_row], ignore_index=True)
+            letter_part = "Could not parse letter. 'Dear ' not found in output."
+    else:
+        csv_part = "Could not parse CSV. 'section,subsection,content' not found."
+        letter_part = full_text
 
-            updated_csv_path = os.path.join("output", "updated_resume_data.csv")
-            df.to_csv(updated_csv_path, index=False)
+    return csv_part, letter_part
 
-            st.success("✅ New entry added!")
-            st.download_button("⬇️ Download Updated CSV", open(updated_csv_path, "rb"), file_name="updated_resume_data.csv")
+def main():
+    load_dotenv()
+    # Use OPENAI_API_KEY or HUGGING_CHAT_API_KEY
+    openai.api_key = os.getenv("OPENAI_API_KEY") or os.getenv("HUGGING_CHAT_API_KEY")
+    if not openai.api_key:
+        tk.messagebox.showerror("Error", "No OpenAI API key found in environment.")
+        sys.exit(1)
+
+    # We'll assume your master CSV is named resume_data_master.csv
+    csv_file = "resume_data_master.csv"
+    if not os.path.isfile(csv_file):
+        tk.messagebox.showerror("Error", f"{csv_file} not found in directory.")
+        sys.exit(1)
+
+    df_master = pd.read_csv(csv_file)
+    if df_master.empty:
+        tk.messagebox.showerror("Error", "The master CSV is empty.")
+        sys.exit(1)
+
+    # Show a dialog for the user to paste job description
+    job_description = get_job_description_from_dialog()
+    if not job_description:
+        tk.messagebox.showinfo("Info", "No job description entered. Exiting.")
+        sys.exit(0)
+
+    # Turn entire master CSV into text
+    master_csv_text = df_master.to_csv(index=False)
+
+    # 1) Call the LLM
+    raw_output = call_llm_to_shorten_resume(job_description, master_csv_text)
+
+    # 2) Parse out CSV & letter
+    short_csv, cover_letter = parse_response_for_csv_and_letter(raw_output)
+
+    # 3) Save them
+    tailored_csv_path = "tailored_resume.csv"
+    cover_letter_path = "cover_letter.txt"
+    pdf_path = "tailored_resume.pdf"
+
+    with open(tailored_csv_path, "w", encoding="utf-8") as f:
+        f.write(short_csv)
+
+    with open(cover_letter_path, "w", encoding="utf-8") as f:
+        f.write(cover_letter)
+
+    # 4) Call resume.py to make PDF
+    try:
+        subprocess.run(["python", "resume.py", tailored_csv_path, pdf_path], check=True)
+        msg = (
+            f"Successfully generated:\n\n"
+            f" - {pdf_path}\n"
+            f" - {cover_letter_path}\n\n"
+            f"Raw LLM output:\n\n"
+            f"{raw_output}"
+        )
+        tk.messagebox.showinfo("Success", msg)
+
+    except subprocess.CalledProcessError as e:
+        tk.messagebox.showerror("Error Generating PDF", f"resume.py failed: {e}")
+
+if __name__ == "__main__":
+    main()
