@@ -5,22 +5,17 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 
-# Layout constants
 LEFT_MARGIN = 50
 TOP_MARGIN = 50
 LINE_HEIGHT = 14
 PAGE_WIDTH, PAGE_HEIGHT = LETTER
 
-# Font settings
 HEADER_FONT = ("Helvetica-Bold", 12)
 SUBHEADER_FONT = ("Helvetica-Bold", 10)
 NORMAL_FONT = ("Helvetica", 8)
 ITALIC_FONT = ("Helvetica-Oblique", 8)
 
 def check_page_break(c, y_position):
-    """
-    If the y_position is too low, start a new page and reset the position.
-    """
     if y_position < LINE_HEIGHT * 2:
         c.showPage()
         c.setFont(*NORMAL_FONT)
@@ -29,29 +24,39 @@ def check_page_break(c, y_position):
 
 def draw_text_with_bold(c, text, x, y, width):
     """
-    Draw text with inline bold markers **like this**.
-    We'll split on '**' and toggle between normal/bold fonts.
+    - Replace any literal \n with real newlines.
+    - Then split by newline to handle bullet points or paragraphs.
+    - Toggle bold for anything between ** markers.
     """
-    lines = simpleSplit(text, NORMAL_FONT[0], NORMAL_FONT[1], width - LEFT_MARGIN * 2)
-    for line in lines:
-        x_pos = LEFT_MARGIN
-        segments = line.split('**')
-        bold = False
-        for segment in segments:
-            font = ("Helvetica-Bold", NORMAL_FONT[1]) if bold else NORMAL_FONT
-            c.setFont(*font)
-            c.drawString(x_pos, y, segment)
-            seg_width = c.stringWidth(segment, font[0], font[1])
-            x_pos += seg_width
-            bold = not bold
-        y -= LINE_HEIGHT
-        y = check_page_break(c, y)
+    text = text.replace("\\n", "\n")
+
+    paragraphs = text.split('\n')
+    for paragraph in paragraphs:
+        wrapped_lines = simpleSplit(paragraph, NORMAL_FONT[0], NORMAL_FONT[1], width - LEFT_MARGIN*2)
+        for line in wrapped_lines:
+            segments = line.split('**')
+            bold = False
+            x_pos = LEFT_MARGIN
+            for segment in segments:
+                font = (HEADER_FONT[0], NORMAL_FONT[1]) if bold else NORMAL_FONT
+                c.setFont(*font)
+                c.drawString(x_pos, y, segment)
+                seg_width = c.stringWidth(segment, font[0], font[1])
+                x_pos += seg_width
+                bold = not bold
+            y -= LINE_HEIGHT
+            y = check_page_break(c, y)
+
+        # Optional extra spacing
+        # y -= 3
+        # y = check_page_break(c, y)
+
     return y
 
 def create_ats_resume_pdf(csv_path, output_path):
     """
     Reads a CSV with columns: section, subsection, content
-    Generates an ATS-friendly PDF resume following the specified section order.
+    Then generates an ATS-friendly PDF resume.
     """
     try:
         df = pd.read_csv(csv_path)
@@ -59,7 +64,6 @@ def create_ats_resume_pdf(csv_path, output_path):
         print(f"Error reading CSV: {e}")
         return
 
-    # Section order
     section_order = [
         "personal_info",
         "professional_summary",
@@ -96,7 +100,6 @@ def create_ats_resume_pdf(csv_path, output_path):
     ].values
     portfolio_link = portfolio[0] if len(portfolio) > 0 else None
 
-    # Setup canvas
     c = canvas.Canvas(output_path, pagesize=LETTER)
     y = PAGE_HEIGHT - TOP_MARGIN
 
@@ -146,7 +149,7 @@ def create_ats_resume_pdf(csv_path, output_path):
         y -= 8
         y = check_page_break(c, y)
 
-    # If there's a portfolio link, put it at bottom
+    # If there's a portfolio link, put it near the bottom
     if portfolio_link:
         y = LINE_HEIGHT * 2
         c.setFont(*ITALIC_FONT)
@@ -156,7 +159,6 @@ def create_ats_resume_pdf(csv_path, output_path):
     print(f"ATS resume saved to {output_path}")
 
 if __name__ == "__main__":
-    # We expect: python resume.py <csv_file> <pdf_output>
     if len(sys.argv) < 3:
         print("Usage: python resume.py <csv_file> <pdf_output>")
         sys.exit(1)

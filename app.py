@@ -16,7 +16,6 @@ def get_job_description_from_dialog() -> str:
     job_desc_container = []
 
     def on_ok():
-        # Retrieve text from the box, store it, then close
         desc = text_box.get("1.0", "end-1c").strip()
         job_desc_container.append(desc)
         root.destroy()
@@ -48,15 +47,47 @@ def get_job_description_from_dialog() -> str:
 
 def call_llm_to_shorten_resume(job_desc: str, full_resume_data: str) -> str:
     """
-    Calls the OpenAI ChatCompletion to produce:
-    - A short CSV for a 1-page resume
-    - A cover letter
-    in a single text output
+    Calls OpenAI ChatCompletion to produce a single-page (~400–500 words) CSV resume
+    and a concise cover letter (<=200 words).
+
+    Key requirements now include:
+      - Keep professional_summary mostly intact.
+      - Always keep personal_info, including 'portfolio'.
+      - Must keep the 'certifications' section with its content.
+      - 3 professional_experience (2 bullets each, 2 sentences).
+      - 3-4 relevant projects (1 bullet, 2 sentences).
     """
+
     prompt = f"""
-You are a specialized AI that creates concise, ATS-friendly resumes for a job applicant.
-IMPORTANT:
-- Always include a personal_info section with subsections: name, target_roles, plus any relevant contact details.
+You are a specialized AI that creates a thorough, ATS-friendly resume for a job applicant.
+
+=== CRITICAL REQUIREMENTS ===
+
+1) The final resume should be ~400–500 words (a single printed page), plus a cover letter up to 200 words.
+2) personal_info:
+   - Must include (subsection=name, target_roles, location, phone, email, etc.) 
+   - Do NOT remove 'personal_info,portfolio,JTMarcu.GitHub.io'.
+3) professional_summary:
+   - Use the existing summary from the CSV with minimal changes. 
+   - You may lightly adapt it to match the job, but do NOT remove or heavily paraphrase it.
+4) certifications:
+   - Must be included in the final CSV. 
+   - Do not omit or rename the 'certifications' section. Keep its full content.
+5) professional_experience:
+   - Exactly 3 subsections: data_bi_consultant, data_freelance, retail_costco.
+   - Each has 1 bold heading + EXACT 2 bullet points (each bullet = 2 sentences).
+6) projects:
+   - Keep 3-4 relevant ones, each with 1 bold heading + 1 bullet of 2 sentences.
+   - Skip less relevant projects if needed.
+7) Summaries for other sections (technical_skills, etc.) are allowed but do not remove them fully.
+8) End with a cover letter (<=200 words) starting with "Dear ".
+
+=== CSV FORMAT ===
+section,subsection,content
+
+Example row:
+professional_experience,data_freelance,"**Data & Full-Stack Developer**\\n- First bullet (2 sentences). Another sentence.\\n- Second bullet (2 sentences). Another sentence."
+
 === JOB DESCRIPTION ===
 {job_desc}
 
@@ -64,16 +95,18 @@ IMPORTANT:
 {full_resume_data}
 
 YOUR TASK:
-1) Produce a short CSV with columns (section,subsection,content), focusing on the most relevant details.
-2) Follow that CSV with a concise cover letter (<=200 words),
-   beginning with "Dear ".
-
-Output format must be:
-   section,subsection,content
-   ... (CSV lines) ...
-   Dear ...
-   ... (cover letter) ...
+- Generate a valid CSV with (section,subsection,content).
+- Keep personal_info (including portfolio).
+- Keep professional_summary mostly intact.
+- Always include certifications section exactly as in the CSV or lightly adjusted if you need to add relevant phrasing. But do not remove any lines.
+- 3 pro experiences (2 bullets each, 2 sentences).
+- 3-4 relevant projects (1 bullet, 2 sentences).
+- Then a cover letter up to 200 words, starting with "Dear ".
+- ~400–500 words total for the resume text.
     """
+
+    import openai
+    from tkinter import messagebox
 
     try:
         response = openai.ChatCompletion.create(
@@ -83,13 +116,14 @@ Output format must be:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.7,
-            max_tokens=1500
+            max_tokens=3000
         )
         return response.choices[0].message.content
 
     except Exception as e:
         messagebox.showerror("OpenAI Error", f"OpenAI API call failed: {e}")
         return ""
+
 
 def parse_response_for_csv_and_letter(full_text: str):
     """
@@ -120,7 +154,7 @@ def parse_response_for_csv_and_letter(full_text: str):
 
 def main():
     load_dotenv()
-    # Use OPENAI_API_KEY or HUGGING_CHAT_API_KEY
+
     openai.api_key = os.getenv("OPENAI_API_KEY") or os.getenv("HUGGING_CHAT_API_KEY")
     if not openai.api_key:
         tk.messagebox.showerror("Error", "No OpenAI API key found in environment.")
@@ -137,13 +171,13 @@ def main():
         tk.messagebox.showerror("Error", "The master CSV is empty.")
         sys.exit(1)
 
-    # Show a dialog for the user to paste job description
+    # Get job description from a Tkinter dialog
     job_description = get_job_description_from_dialog()
     if not job_description:
         tk.messagebox.showinfo("Info", "No job description entered. Exiting.")
         sys.exit(0)
 
-    # Turn entire master CSV into text
+    # Convert entire master CSV to text
     master_csv_text = df_master.to_csv(index=False)
 
     # 1) Call the LLM
@@ -151,6 +185,24 @@ def main():
 
     # 2) Parse out CSV & letter
     short_csv, cover_letter = parse_response_for_csv_and_letter(raw_output)
+
+    # -- Fallback injection for personal_info if the AI omits them --
+    essential_personal_info = {
+        "name": "Jonathan Marcu",
+        "target_roles": "Applied Scientist | Machine Learning Engineer | Data Scientist | Data Analyst | BI Consultant",
+        "location": "San Diego, CA",
+        "phone": "(619) 483-5543",
+        "email": "JonMarcu@live.com",
+        "linkedin": "linkedin.com/in/jon-marcu",
+        "github": "github.com/JTMarcu"
+        # add or remove as desired
+    }
+
+    # Ensure 'personal_info,name,' is present, etc.
+    for key, val in essential_personal_info.items():
+        snippet = f"personal_info,{key},"
+        if snippet not in short_csv:
+            short_csv += f'\npersonal_info,{key},"{val}"'
 
     # 3) Save them
     tailored_csv_path = "tailored_resume.csv"
